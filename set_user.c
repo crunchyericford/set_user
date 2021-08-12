@@ -60,11 +60,29 @@ PG_MODULE_MAGIC;
 #define ALLOWLIST_WILDCARD	"*"
 #define SUPERUSER_AUDIT_TAG	"AUDIT"
 
-static char *save_log_statement = NULL;
-static Oid save_OldUserId = InvalidOid;
-static char *reset_token = NULL;
 static ProcessUtility_hook_type prev_hook = NULL;
 static object_access_hook_type next_object_access_hook;
+
+/* set_user transaction state */
+static void set_user_xact_handler (XactEvent event, void *arg);
+typedef struct
+{
+	Oid userid;
+	bool is_superuser;
+	char *username;
+	char *log_statement;
+	const char *log_prefix;
+	char *reset_token;
+} SetUserXactState;
+
+static SetUserXactState	*new;
+static SetUserXactState	*old;
+
+static bool set_user_pending = false;
+static bool is_reset = false;
+
+static const char		   *su = "Superuser ";
+static const char		   *nsu = "";
 
 static bool Block_AS = false;
 static bool Block_CP = false;
@@ -174,32 +192,12 @@ PG_FUNCTION_INFO_V1(set_user);
 Datum
 set_user(PG_FUNCTION_ARGS)
 {
-	bool			argisnull = PG_ARGISNULL(0);
-	int				nargs = PG_NARGS();
-	HeapTuple		roleTup;
-	Oid				OldUserId = GetUserId();
-	char		   *olduser = GETUSERNAMEFROMID(OldUserId);
-	bool			OldUser_is_superuser = superuser_arg(OldUserId);
-	Oid				NewUserId = InvalidOid;
-	char		   *newuser = NULL;
-	bool			NewUser_is_superuser = false;
-	char		   *su = "Superuser ";
-	char		   *nsu = "";
-	MemoryContext	oldcontext;
-	bool			is_reset = false;
-	bool			is_token = false;
-	bool			is_privileged = false;
-
-	/*
-	 * Disallow SET ROLE inside a transaction block. The
-	 * semantics are too strange, and I cannot think of a
-	 * good use case where it would make sense anyway.
-	 * Perhaps one day we will need to rethink this...
-	 */
-	if (IsTransactionBlock())
-		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-						errmsg("set_user: SET ROLE not allowed within transaction block"),
-						errhint("Use SET ROLE outside transaction block instead.")));
+	bool				argisnull = PG_ARGISNULL(0);
+	int					nargs = PG_NARGS();
+	HeapTuple			roleTup;
+	MemoryContext		oldcontext = NULL;
+	bool				is_token = false;
+	bool				is_privileged = false;
 
 	/*
 	 * set_user(non_null_arg text)
@@ -252,20 +250,25 @@ set_user(PG_FUNCTION_ARGS)
 	else if (nargs == 0 || (nargs == 1 && argisnull))
 		is_reset = true;
 
+	/* Switch to a persistent memory context to store state */
+	oldcontext = MemoryContextSwitchTo(TopMemoryContext);
+
 	if ((nargs == 1 && !is_reset) || nargs == 2)
 	{
 		/* we are setting a new user */
-		if (save_OldUserId != InvalidOid)
-			elog(ERROR, "must reset previous user prior to setting again");
+		if (old != NULL && old->userid != InvalidOid)
+		{
+			ereport(ERROR,
+					(errcode(ERRCODE_INTERNAL_ERROR),
+					 errmsg("must reset previous user prior to setting again")));
+		}
 
-		newuser = text_to_cstring(PG_GETARG_TEXT_PP(0));
+		new = palloc0(sizeof(SetUserXactState));
+		new->username = text_to_cstring(PG_GETARG_TEXT_PP(0));
 
 		/* with 2 args, the caller wants to specify a reset token */
 		if (nargs == 2)
 		{
-			/* use session lifetime memory */
-			oldcontext = MemoryContextSwitchTo(TopMemoryContext);
-
 			/* this should never be NULL but just in case */
 			if (PG_ARGISNULL(1))
 			{
@@ -275,20 +278,19 @@ set_user(PG_FUNCTION_ARGS)
 			}
 
 			/*capture the reset token */
-			reset_token = text_to_cstring(PG_GETARG_TEXT_PP(1));
-			MemoryContextSwitchTo(oldcontext);
+			new->reset_token = text_to_cstring(PG_GETARG_TEXT_PP(1));
 		}
 
 		/* Look up the username */
-		roleTup = SearchSysCache1(AUTHNAME, PointerGetDatum(newuser));
+		roleTup = SearchSysCache1(AUTHNAME, PointerGetDatum(new->username));
 		if (!HeapTupleIsValid(roleTup))
-			elog(ERROR, "role \"%s\" does not exist", newuser);
+			elog(ERROR, "role \"%s\" does not exist", new->username);
 
-		NewUserId = _heap_tuple_get_oid(roleTup);
-		NewUser_is_superuser = ((Form_pg_authid) GETSTRUCT(roleTup))->rolsuper;
+		new->userid = _heap_tuple_get_oid(roleTup);
+		new->is_superuser = ((Form_pg_authid) GETSTRUCT(roleTup))->rolsuper;
 		ReleaseSysCache(roleTup);
 
-		if (NewUser_is_superuser)
+		if (new->is_superuser)
 		{
 			if (!is_privileged)
 				/* can only escalate with set_user_u */
@@ -303,7 +305,7 @@ set_user(PG_FUNCTION_ARGS)
 						 errmsg("switching to superuser not allowed"),
 						 errhint("Add current user to set_user.superuser_allowlist.")));
 		}
-		else if(!check_user_allowlist(NewUserId, NOSU_TargetAllowlist))
+		else if(!check_user_allowlist(new->userid, NOSU_TargetAllowlist))
 		{
 			ereport(ERROR,
 					(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
@@ -311,22 +313,28 @@ set_user(PG_FUNCTION_ARGS)
 					 errhint("Add target role to set_user.nosuperuser_target_allowlist.")));
 		}
 
-		/* keep track of original userid and value of log_statement */
-		save_OldUserId = OldUserId;
-		oldcontext = MemoryContextSwitchTo(TopMemoryContext);
-		save_log_statement = pstrdup(GetConfigOption("log_statement",
-													 false, false));
-		MemoryContextSwitchTo(oldcontext);
+		/* Keep track of current state */
+		old = palloc0(sizeof(SetUserXactState));
+		old->log_statement = pstrdup(GetConfigOption("log_statement", false, false));
+		old->log_prefix = pstrdup(GetConfigOption("log_line_prefix", true, false));
+		old->reset_token = new->reset_token;
+		old->userid = GetUserId();
+		old->username = GETUSERNAMEFROMID(old->userid);
+		old->is_superuser = superuser_arg(old->userid);
 
-		if (NewUser_is_superuser && Block_LS)
+		if (new->is_superuser && Block_LS)
 		{
-			const char	   *old_log_prefix = GetConfigOption("log_line_prefix", true, false);
-			char		   *new_log_prefix = NULL;
+			new->log_prefix = NULL;
 
-			if (old_log_prefix)
-				new_log_prefix = psprintf("%s%s: ", old_log_prefix, SU_AuditTag);
+			/*
+			 * Add a custom AUDIT tag to postgresql.conf setting
+			 * 'log_line_prefix' so log statements are tagged for easy
+			 * filtering.
+			 */
+			if (old->log_prefix)
+				new->log_prefix = psprintf("%s%s: ", old->log_prefix, SU_AuditTag);
 			else
-				new_log_prefix = pstrdup(SU_AuditTag);
+				new->log_prefix = pstrdup(SU_AuditTag);
 
 			/*
 			 * Force logging of everything if block_log_statement is true
@@ -334,74 +342,111 @@ set_user(PG_FUNCTION_ARGS)
 			 * caller could always set log_statement to all prior to using set_user,
 			 * and ensure Block_LS is true.
 			 */
-			SetConfigOption("log_statement", "all", PGC_SUSET, PGC_S_SESSION);
-
-			/*
-			 * Add a custom AUDIT tag to postgresql.conf setting
-			 * 'log_line_prefix' so log statements are tagged for easy
-			 * filtering.
-			 */
-			SetConfigOption("log_line_prefix", new_log_prefix, PGC_POSTMASTER, PGC_S_SESSION);
+			new->log_statement = pstrdup("all");
 		}
 	}
 	else if (is_reset)
 	{
-		char	   *user_supplied_token = NULL;
-
-		/* set_user not active, nothing to do */
-		if (save_OldUserId == InvalidOid)
+		/*
+		 * set_user not active. No need to change `set_user_pending`
+		 * state here. The xact handler has no state to process. Just
+		 * reset the `is_reset` flag and return succes.
+		 */
+		if (old == NULL || old->userid == InvalidOid)
+		{
+			is_reset = false;
 			PG_RETURN_TEXT_P(cstring_to_text("OK"));
+		}
 
-		if (reset_token && !is_token)
+		if (old->reset_token && !is_token)
 			ereport(ERROR,
 					(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
 					 errmsg("reset token required but not provided")));
-		else if (reset_token && is_token)
-			user_supplied_token = text_to_cstring(PG_GETARG_TEXT_PP(0));
+		else if (old->reset_token && is_token)
+			new->reset_token = text_to_cstring(PG_GETARG_TEXT_PP(0));
 
-		if (reset_token)
+		if (old->reset_token)
 		{
-			if (strcmp(reset_token, user_supplied_token) != 0)
+			if (strcmp(old->reset_token, new->reset_token) != 0)
 				ereport(ERROR,
 						(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
 						errmsg("incorrect reset token provided")));
 		}
 
-		/* get original userid to whom we will reset */
-		NewUserId = save_OldUserId;
-		newuser = GETUSERNAMEFROMID(NewUserId);
-		NewUser_is_superuser = superuser_arg(NewUserId);
-
-		/* flag that we are now reset */
-		save_OldUserId = InvalidOid;
-
-		/* restore original log_statement setting if block_log_statement is true */
-		if (Block_LS)
-			SetConfigOption("log_statement", save_log_statement, PGC_SUSET, PGC_S_SESSION);
-
-		pfree(save_log_statement);
-		save_log_statement = NULL;
-
-		if (reset_token)
-		{
-			pfree(reset_token);
-			reset_token = NULL;
-		}
+		/* store old state as new */
+		new->userid = old->userid;
+		new->username = GETUSERNAMEFROMID(new->userid);
+		new->log_statement = old->log_statement;
+		new->log_prefix = old->log_prefix;
+		new->reset_token = NULL;
+		new->is_superuser = superuser_arg(new->userid);
 	}
 	else
 		/* should not happen */
 		elog(ERROR, "unexpected argument combination");
 
-	elog(LOG, "%sRole %s transitioning to %sRole %s",
-			  OldUser_is_superuser ? su : nsu,
-			  olduser,
-			  NewUser_is_superuser ? su : nsu,
-			  newuser);
-
-	SetCurrentRoleId(NewUserId, NewUser_is_superuser);
-	PostSetUserHook(is_reset, newuser);
-
+	MemoryContextSwitchTo(oldcontext);
+	set_user_pending = true;
 	PG_RETURN_TEXT_P(cstring_to_text("OK"));
+}
+
+static void
+set_user_free_state(SetUserXactState **state)
+{
+	if (*state != NULL)
+	{
+		(*state)->userid = InvalidOid;
+		pfree(*state);
+		*state = NULL;
+	}
+}
+
+static void
+set_user_xact_handler (XactEvent event, void *arg)
+{
+	MemoryContext oldcontext = NULL;
+
+	switch (event)
+	{
+		case XACT_EVENT_PRE_COMMIT:
+			if (!set_user_pending)
+				return;
+
+			oldcontext = MemoryContextSwitchTo(TopMemoryContext);
+			elog(LOG, "%sRole %s transitioning to %sRole %s",
+				  old->is_superuser ? su : nsu,
+				  old->username,
+				  new->is_superuser ? su : nsu,
+				  new->username);
+
+			/* Do the actual work */
+			SetCurrentRoleId(new->userid, new->is_superuser);
+			PostSetUserHook(is_reset, new->username);
+
+			/* Update GUCs */
+			SetConfigOption("log_statement", new->log_statement, PGC_SUSET, PGC_S_SESSION);
+			SetConfigOption("log_line_prefix", new->log_prefix, PGC_POSTMASTER, PGC_S_SESSION);
+
+			/* start fresh */
+			if (is_reset)
+			{
+				set_user_free_state(&old);
+				set_user_free_state(&new);
+
+				/* always clear is_reset after we've processed it */
+				is_reset = false;
+			}
+
+			set_user_pending = false;
+			MemoryContextSwitchTo(oldcontext);
+			break;
+		case XACT_EVENT_ABORT:
+			is_reset = false;
+			set_user_pending = false;
+			break;
+		default:
+			break;
+	}
 }
 
 void
@@ -452,6 +497,8 @@ _PG_init(void)
 	/* Object access hook */
 	next_object_access_hook = object_access_hook;
 	object_access_hook = set_user_object_access;
+
+	RegisterXactCallback(set_user_xact_handler, NULL);
 }
 
 void
@@ -469,7 +516,7 @@ _PG_fini(void)
 _PU_HOOK
 {
 	/* if set_user has been used to transition, enforce set_user GUCs */
-	if (save_OldUserId != InvalidOid)
+	if (old != NULL && old->userid != InvalidOid)
 	{
 		switch (nodeTag(parsetree))
 		{
@@ -605,7 +652,7 @@ set_session_auth(PG_FUNCTION_ARGS)
 	ExitOnAnyError = orig_exit_on_err;
 	PG_RETURN_TEXT_P(cstring_to_text("OK"));
 }
-	
+
 /*
  * set_user_object_access
  *
@@ -616,7 +663,7 @@ static void
 set_user_object_access (ObjectAccessType access, Oid classId, Oid objectId, int subId, void *arg)
 {
 	/* If set_user has been used to transition, enforce `set_config` block. */
-	if (save_OldUserId != InvalidOid)
+	if (old != NULL && old->userid != InvalidOid)
 	{
 		if (next_object_access_hook)
 		{
