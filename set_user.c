@@ -358,19 +358,23 @@ set_user(PG_FUNCTION_ARGS)
 			PG_RETURN_TEXT_P(cstring_to_text("OK"));
 		}
 
-		if (old->reset_token && !is_token)
-			ereport(ERROR,
-					(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
-					 errmsg("reset token required but not provided")));
-		else if (old->reset_token && is_token)
-			new->reset_token = text_to_cstring(PG_GETARG_TEXT_PP(0));
-
+		/* Enforce token comparison if the reset_token is set */
 		if (old->reset_token)
 		{
+			if (!is_token)
+			{
+				ereport(ERROR,
+						(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
+						 errmsg("reset token required but not provided")));
+			}
+
+			new->reset_token = text_to_cstring(PG_GETARG_TEXT_PP(0));
 			if (strcmp(old->reset_token, new->reset_token) != 0)
+			{
 				ereport(ERROR,
 						(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
 						errmsg("incorrect reset token provided")));
+			}
 		}
 
 		/* store old state as new */
