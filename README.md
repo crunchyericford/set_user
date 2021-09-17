@@ -1,5 +1,12 @@
 # PostgreSQL set_user Extension Module
-
+![pg9.4](https://img.shields.io/github/workflow/status/crunchyericford/set_user/Postgres9.4/cicd?label=postgres%3A9.4)
+![pg9.5](https://img.shields.io/github/workflow/status/crunchyericford/set_user/Postgres9.5/cicd?label=postgres%3A9.5)
+![pg9.6](https://img.shields.io/github/workflow/status/crunchyericford/set_user/Postgres9.6/cicd?label=postgres%3A9.6)
+![pg10](https://img.shields.io/github/workflow/status/crunchyericford/set_user/Postgres10/cicd?label=postgres%3A10)
+![pg11](https://img.shields.io/github/workflow/status/crunchyericford/set_user/Postgres11/cicd?label=postgres%3A11)
+![pg12](https://img.shields.io/github/workflow/status/crunchyericford/set_user/Postgres12/cicd?label=postgres%3A12)
+![pg13](https://img.shields.io/github/workflow/status/crunchyericford/set_user/Postgres13/cicd?label=postgres%3A13)
+![pg14beta3](https://img.shields.io/github/workflow/status/crunchyericford/set_user/Postgres14beta3/cicd?label=postgres%3A14beta3)
 ## Syntax
 
 ```
