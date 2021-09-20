@@ -41,9 +41,11 @@ jobs:
           docker logs setuser > setuser_container.out 2>&1
 
       - name: Copy regression diff
+        if: always()
         continue-on-error: true
         run: |
-          docker cp setuser:/opt/set_user/results/regression.diffs ./regression.diffs
+          docker cp setuser:/opt/set_user/regression.diffs ./regression.diffs
+          cat ./regression.diffs
 
       - name: Upload artifacts
         if: always()
