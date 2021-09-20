@@ -76,6 +76,9 @@ _heap_tuple_get_oid(HeapTuple roleTup)
 
 #include "access/table.h"
 
+#define _procform_oid (tup) \
+	((Form_pg_proc) GETSTRUCT(procTup))->oid
+
 #endif /* 12+ */
 
 /*
@@ -102,6 +105,9 @@ _heap_tuple_get_oid(HeapTuple roleTup)
 
 #include "utils/varlena.h"
 #define parsetree ((Node *) pstmt->utilityStmt)
+
+#define _procform_oid (tup) \
+	HeapTupleGetOid(tup)
 
 #endif /* 10+ */
 
