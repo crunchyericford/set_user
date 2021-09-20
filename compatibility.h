@@ -68,17 +68,34 @@
  */
 #if PG_VERSION_NUM >= 120000
 #define HEAP_TUPLE_GET_OID
+
+/*
+ * _heap_tuple_get_oid
+ *
+ * Return the oid of the tuple based on the provided catalogID.
+ */
 static inline Oid
-_heap_tuple_get_oid(HeapTuple roleTup)
+_heap_tuple_get_oid(HeapTuple tuple, Oid catalogID)
 {
-	return ((Form_pg_authid) GETSTRUCT(roleTup))->oid;
+        switch (catalogID)
+        {
+                case ProcedureRelationId:
+                        return ((Form_pg_proc) GETSTRUCT(tuple))->oid;
+                        break;
+                case AuthIdRelationId:
+                        return((Form_pg_authid) GETSTRUCT(tuple))->oid;
+                        break;
+                default:
+                        ereport(ERROR,
+                                        (errcode(ERRCODE_SYNTAX_ERROR),
+                                         errmsg("set_user: invalid relation ID provided")));
+                        return 0;
+        }
 }
 
+
 #include "access/table.h"
-
-#define _procform_oid (tup) \
-	((Form_pg_proc) GETSTRUCT(procTup))->oid
-
+#define OBJECTADDRESS
 #endif /* 12+ */
 
 /*
@@ -105,9 +122,6 @@ _heap_tuple_get_oid(HeapTuple roleTup)
 
 #include "utils/varlena.h"
 #define parsetree ((Node *) pstmt->utilityStmt)
-
-#define _procform_oid (tup) \
-	HeapTupleGetOid(tup)
 
 #endif /* 10+ */
 
@@ -145,11 +159,51 @@ _heap_tuple_get_oid(HeapTuple roleTup)
 
 # ifndef HEAP_TUPLE_GET_OID
 static inline Oid
-_heap_tuple_get_oid(HeapTuple roleTup)
+_heap_tuple_get_oid(HeapTuple tup, Oid catalogId)
 {
-	return HeapTupleGetOid(roleTup);
+	return HeapTupleGetOid(tup);
 }
 # endif
+
+#include "access/heapam.h"
+
+#ifndef OBJECTADDRESS
+#include "utils/tqual.h"
+#endif
+
+#ifndef Anum_pg_proc_oid
+#include "access/sysattr.h"
+#define Anum_pg_proc_oid ObjectIdAttributeNumber
+#define Anum_pg_authid_oid ObjectIdAttributeNumber
+#endif
+
+/*
+ * _scan_key_init
+ *
+ * Initialize entry based on the catalogID provided.
+ */
+static inline void
+_scan_key_init(ScanKey entry,
+            Oid catalogID,
+            StrategyNumber strategy,
+            RegProcedure procedure,
+            Datum argument)
+{
+        switch (catalogID)
+        {
+                case ProcedureRelationId:
+                        ScanKeyInit(entry, Anum_pg_proc_oid, strategy, procedure, argument);
+                        break;
+                case AuthIdRelationId:
+                        ScanKeyInit(entry, Anum_pg_authid_oid, strategy, procedure, argument);
+                        break;
+                default:
+                        ereport(ERROR,
+                                        (errcode(ERRCODE_SYNTAX_ERROR),
+                                         errmsg("cpsm: invalid relation ID provided")));
+        }
+}
+
 #endif
 
 #if !defined(PG_VERSION_NUM) || PG_VERSION_NUM < 90400

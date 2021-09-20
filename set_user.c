@@ -34,6 +34,7 @@
 #include "access/xact.h"
 #include "catalog/indexing.h"
 #include "catalog/objectaccess.h"
+#include "catalog/objectaddress.h"
 #include "catalog/pg_authid.h"
 #include "catalog/pg_proc.h"
 #include "miscadmin.h"
@@ -285,7 +286,7 @@ set_user(PG_FUNCTION_ARGS)
 		if (!HeapTupleIsValid(roleTup))
 			elog(ERROR, "role \"%s\" does not exist", new->username);
 
-		new->userid = _heap_tuple_get_oid(roleTup);
+		new->userid = _heap_tuple_get_oid(roleTup, AuthIdRelationId);
 		new->is_superuser = ((Form_pg_authid) GETSTRUCT(roleTup))->rolsuper;
 		ReleaseSysCache(roleTup);
 
@@ -751,7 +752,7 @@ set_user_check_proc(HeapTuple procTup, Relation rel)
 	Oid					procoid;
 
 	/* For function metadata (Oid) */
-	procoid = _procform_oid(procTup);
+	procoid = _heap_tuple_get_oid(procTup, ProcedureRelationId);
 
 	/* Figure out the underlying function */
 	prosrcdatum = heap_getattr(procTup, Anum_pg_proc_prosrc, RelationGetDescr(rel), &isnull);
@@ -773,7 +774,7 @@ set_user_check_proc(HeapTuple procTup, Relation rel)
 	{
 		set_config_oid_cache = list_append_unique_oid(set_config_oid_cache, procoid);
 	}
-	else if (list_member_oid(set_config_oid_cache, procform->oid))
+	else if (list_member_oid(set_config_oid_cache, procoid))
 	{
 		set_config_oid_cache = list_delete_oid(set_config_oid_cache, procoid);
 	}
@@ -813,11 +814,11 @@ set_user_cache_proc(Oid functionId)
 	 */
 	if (functionId != InvalidOid)
 	{
-			indexId = ProcedureOidIndexId;
-			indexOk = true;
-			snapshot = SnapshotSelf;
-			nkeys = 1;
-			ScanKeyInit(&skey, Anum_pg_proc_oid, BTEqualStrategyNumber, F_OIDEQ, ObjectIdGetDatum(functionId));
+		indexId = ProcedureOidIndexId;
+		indexOk = true;
+		snapshot = SnapshotSelf;
+		nkeys = 1;
+		_scan_key_init(&skey, Anum_pg_proc_oid, BTEqualStrategyNumber, F_OIDEQ, ObjectIdGetDatum(functionId));
 	}
 	else if (set_config_oid_cache != NIL)
 	{
@@ -828,7 +829,7 @@ set_user_cache_proc(Oid functionId)
 	/* Go ahead and do the work */
 	PG_TRY();
 	{
-		rel = table_open(ProcedureRelationId, AccessShareLock);
+		rel = heap_open(ProcedureRelationId, AccessShareLock);
 		sscan = systable_beginscan(rel, indexId, indexOk, snapshot, nkeys, &skey);
 
 		/*
@@ -845,12 +846,12 @@ set_user_cache_proc(Oid functionId)
 	PG_CATCH();
 	{
 		systable_endscan(sscan);
-		table_close(rel, NoLock);
+		heap_close(rel, NoLock);
 
 		PG_RE_THROW();
 	}
 	PG_END_TRY();
 
 	systable_endscan(sscan);
-	table_close(rel, NoLock);
+	heap_close(rel, NoLock);
 }
