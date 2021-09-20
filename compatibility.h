@@ -74,6 +74,8 @@ _heap_tuple_get_oid(HeapTuple roleTup)
 	return ((Form_pg_authid) GETSTRUCT(roleTup))->oid;
 }
 
+#include "access/table.h"
+
 #endif /* 12+ */
 
 /*
