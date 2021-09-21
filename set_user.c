@@ -31,10 +31,10 @@
 
 #include "access/genam.h"
 #include "access/htup_details.h"
-#include "access/table.h"
 #include "access/xact.h"
 #include "catalog/indexing.h"
 #include "catalog/objectaccess.h"
+#include "catalog/objectaddress.h"
 #include "catalog/pg_authid.h"
 #include "catalog/pg_proc.h"
 #include "miscadmin.h"
@@ -284,7 +284,7 @@ set_user(PG_FUNCTION_ARGS)
 		if (!HeapTupleIsValid(roleTup))
 			elog(ERROR, "role \"%s\" does not exist", newuser);
 
-		NewUserId = _heap_tuple_get_oid(roleTup);
+		NewUserId = _heap_tuple_get_oid(roleTup, AuthIdRelationId);
 		NewUser_is_superuser = ((Form_pg_authid) GETSTRUCT(roleTup))->rolsuper;
 		ReleaseSysCache(roleTup);
 
@@ -596,7 +596,7 @@ set_session_auth(PG_FUNCTION_ARGS)
 				 errmsg("switching to superuser not allowed"),
 				 errhint("Use \'set_user_u\' to escalate.")));
 
-	InitializeSessionUserId(newuser, InvalidOid);
+	_InitializeSessionUserId(newuser, InvalidOid);
 #else
 	ExitOnAnyError = exit_on_error;
 	elog(ERROR, "Assert build disables set_session_auth()");
@@ -698,10 +698,10 @@ set_user_check_proc(HeapTuple procTup, Relation rel)
 	MemoryContext		ctx;
 	Datum       		prosrcdatum;
 	bool				isnull;
-	Form_pg_proc		procform;
+	Oid					procoid;
 
 	/* For function metadata (Oid) */
-	procform = (Form_pg_proc) GETSTRUCT(procTup);
+	procoid = _heap_tuple_get_oid(procTup, ProcedureRelationId);
 
 	/* Figure out the underlying function */
 	prosrcdatum = heap_getattr(procTup, Anum_pg_proc_prosrc, RelationGetDescr(rel), &isnull);
@@ -709,7 +709,7 @@ set_user_check_proc(HeapTuple procTup, Relation rel)
 	{
 		ereport(ERROR,
 				(errcode(ERRCODE_INTERNAL_ERROR),
-				 errmsg("set_user: null prosrc for function %u", procform->oid)));
+				 errmsg("set_user: null prosrc for function %u", procoid)));
 	}
 
 	/*
@@ -721,11 +721,11 @@ set_user_check_proc(HeapTuple procTup, Relation rel)
 	/* Make sure the Oid cache is up-to-date */
 	if (strcmp(TextDatumGetCString(prosrcdatum), set_config_proc_name) == 0)
 	{
-		set_config_oid_cache = list_append_unique_oid(set_config_oid_cache, procform->oid);
+		set_config_oid_cache = list_append_unique_oid(set_config_oid_cache, procoid);
 	}
-	else if (list_member_oid(set_config_oid_cache, procform->oid))
+	else if (list_member_oid(set_config_oid_cache, procoid))
 	{
-		set_config_oid_cache = list_delete_oid(set_config_oid_cache, procform->oid);
+		set_config_oid_cache = list_delete_oid(set_config_oid_cache, procoid);
 	}
 
 	MemoryContextSwitchTo(ctx);
@@ -763,11 +763,11 @@ set_user_cache_proc(Oid functionId)
 	 */
 	if (functionId != InvalidOid)
 	{
-			indexId = ProcedureOidIndexId;
-			indexOk = true;
-			snapshot = SnapshotSelf;
-			nkeys = 1;
-			ScanKeyInit(&skey, Anum_pg_proc_oid, BTEqualStrategyNumber, F_OIDEQ, ObjectIdGetDatum(functionId));
+		indexId = ProcedureOidIndexId;
+		indexOk = true;
+		snapshot = SnapshotSelf;
+		nkeys = 1;
+		_scan_key_init(&skey, ProcedureRelationId, BTEqualStrategyNumber, F_OIDEQ, ObjectIdGetDatum(functionId));
 	}
 	else if (set_config_oid_cache != NIL)
 	{
