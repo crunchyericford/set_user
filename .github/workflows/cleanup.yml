@@ -1,0 +1,20 @@
+on:
+  push:
+    branches:
+      - cicd-cleanup
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    name: Cleanup Workflow Runs and Artifacts
+    steps:
+      - name: Delete workflow runs
+        uses: Mattraks/delete-workflow-runs@main
+        with:
+          token: ${{ secrets.PAT }}
+          repository: ${{ github.repository }}
+          retain_days: 1
+      - name: Remove old artifacts
+        uses: c-hive/gha-remove-artifacts@v1
+        with:
+          age: '1 day'
