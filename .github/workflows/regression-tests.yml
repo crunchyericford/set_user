@@ -28,7 +28,7 @@ jobs:
       - name: Build set_user
         run: |
           DEVPKG=${{ matrix.devpkg }}
-          [ -z "$DEVPKG"] && DEVPKG=${{ matrix.pgver }}
+          if [ -z "$DEVPKG"]; then DEVPKG=${{ matrix.pgver }}; fi
           docker build -t set_user:latest \
                 --build-arg PGVER=${{ matrix.pgver }} \
                 --build-arg DEVPKG=$DEVPKG \
