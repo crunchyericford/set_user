@@ -3,7 +3,7 @@
 on:
   push:
     branches:
-      - master
+      - cicd*
   pull_request:
     branches:
       - master
@@ -17,15 +17,7 @@ jobs:
       SCRIPT_DIR: ${{ github.workspace }}/.github/resources/scripts
     strategy:
       matrix:
-        include:
-          - {pgver: 9.4, devpkg: 9.4}
-          - {pgver: 9.5, devpkg: 9.5}
-          - {pgver: 9.6, devpkg: 9.6}
-          - {pgver: 10, devpkg: 10}
-          - {pgver: 11, devpkg: 11}
-          - {pgver: 12, devpkg: 12}
-          - {pgver: 13, devpkg: 13}
-          - {pgver: 14, devpkg: 14}
+        pgver,devpkg: [9.4, 9.5, 9.6, 10, 11, 12, 13, 14]
     steps:
       - name: Checkout set_user repo
         uses: actions/checkout@v2.3.4
