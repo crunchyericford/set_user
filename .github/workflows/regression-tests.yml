@@ -17,7 +17,7 @@ jobs:
       SCRIPT_DIR: ${{ github.workspace }}/.github/resources/scripts
     strategy:
       matrix:
-        pgver: [9.4, 9.5, 9.6, 10, 11, 12, 13, 14, 14beta3]
+        pgver: [9.4, 9.5, 9.6, 10, 11, 12, 13, 14]
         include:
           - pgver: 14beta3
             devpkg: 14
