@@ -15,23 +15,26 @@ jobs:
       DOCKER_DIR: ${{ github.workspace }}/.github/docker
       RESOURCE_DIR: ${{ github.workspace }}/.github/resources
       SCRIPT_DIR: ${{ github.workspace }}/.github/resources/scripts
+      DEVPKG: ${{ matrix.devpkg }}
     strategy:
       matrix:
         pgver: [9.4, 9.5, 9.6, 10, 11, 12, 13, 14]
         include:
           - pgver: 14beta3
             devpkg: 14
+
     steps:
       - name: Checkout set_user repo
         uses: actions/checkout@v2.3.4
 
       - name: Build set_user
         run: |
-          DEVPKG=${{ matrix.devpkg }}
-          if [ -z "$DEVPKG"]; then DEVPKG=${{ matrix.pgver }}; fi
+          if [ -z ${{ env.DEVPKG }} ]; \
+            then echo "DEVPKG=${{ matrix.pgver }}" >> $GITHUB_ENV; \
+          fi
           docker build -t set_user:latest \
                 --build-arg PGVER=${{ matrix.pgver }} \
-                --build-arg DEVPKG=$DEVPKG \
+                --build-arg DEVPKG=${{ env.DEVPKG }} \
                 -f ${{ env.DOCKER_DIR }}/Dockerfile .
       
       - name: Echos
