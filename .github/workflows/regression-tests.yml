@@ -33,6 +33,12 @@ jobs:
                 --build-arg PGVER=${{ matrix.pgver }} \
                 --build-arg DEVPKG=$DEVPKG \
                 -f ${{ env.DOCKER_DIR }}/Dockerfile .
+      
+      - name: Echos
+        run: |
+          echo $DEVPKG
+          echo ${{ matrix.pgver }}
+          echo ${{ matrix.devpkg }}
 
       - name: Run PG set_user
         run: |
