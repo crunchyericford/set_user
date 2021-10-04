@@ -26,12 +26,14 @@ jobs:
     steps:
       - name: Checkout set_user repo
         uses: actions/checkout@v2.3.4
+      
+      - name: Set DEVPKG
+        if: ${{ env.DEVPKG == '' }}
+        run: |
+          echo "DEVPKG=${{ matrix.pgver }}" >> $GITHUB_ENV;  
 
       - name: Build set_user
         run: |
-          if [ -z ${{ env.DEVPKG }} ]; \
-            then echo "DEVPKG=${{ matrix.pgver }}" >> $GITHUB_ENV; \
-          fi
           docker build -t set_user:latest \
                 --build-arg PGVER=${{ matrix.pgver }} \
                 --build-arg DEVPKG=${{ env.DEVPKG }} \
